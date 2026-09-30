@@ -17,6 +17,8 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = env::var("AKAMAI_ENDPOINT").expect("AKAMAI_ENDPOINT not set in .env");
     let bucket_name = env::var("AKAMAI_BUCKET_NAME").expect("AKAMAI_BUCKET_NAME not set in .env");
     let input_file = "files.txt";
+    let skip_download = env::var("SKIP_DOWNLOAD").unwrap_or_default() == "true";
+
 
     // 1. Setup AWS Config
     let credentials = Credentials::new(access_key, secret_key, None, None, "akamai");
@@ -40,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     // 3. Process each file
     for key in lines {
         println!("Processing: {}", key);
-        match process_transfer(&client, &bucket_name, key).await {
+        match process_transfer(&client, &bucket_name, key, skip_download).await {
             Ok(_) => println!("Successfully processed and deleted: {}\n", key),
             Err(e) => eprintln!("Error processing {}: {}\n", key, e),
         }
@@ -51,44 +53,29 @@ async fn main() -> anyhow::Result<()> {
 
 /// Downloads a file from the bucket, recreates the directory structure locally,
 /// and deletes it from the source.
-async fn process_transfer(client: &Client, bucket_name: &str, object_key: &str) -> anyhow::Result<()> {
-    // Determine the local path (e.g., "folder/subfolder/file.png")
-    let local_path = std::path::Path::new(object_key);
-
-    // Create the parent directories recursively
-    if let Some(parent) = local_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).await?;
-            println!("  -> Created directory structure: {:?}", parent);
+async fn process_transfer(client: &Client, bucket_name: &str, object_key: &str, skip_download: bool) -> anyhow::Result<()> {
+    if !skip_download {
+        let local_path = std::path::Path::new(object_key);
+        if let Some(parent) = local_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).await?;
+            }
         }
+
+        println!("  -> Downloading {}...", object_key);
+        let resp = client.get_object().bucket(bucket_name).key(object_key).send().await?;
+        let data = resp.body.collect().await?;
+        let bytes = data.to_vec();
+
+        let mut file = File::create(local_path).await?;
+        file.write_all(&bytes).await?;
+        println!("  -> Saved to local path.");
+    } else {
+        println!("  -> Skipping download (as per config).");
     }
 
-    // Download the object
-    println!("  -> Downloading {}...", object_key);
-    let resp = client
-        .get_object()
-        .bucket(bucket_name)
-        .key(object_key)
-        .send()
-        .await?;
-
-    let data = resp.body.collect().await?;
-    let bytes = data.to_vec();
-
-    // Write the file
-    let mut file = File::create(local_path).await?;
-    file.write_all(&bytes).await?;
-    
-    println!("  -> Saved to local path: {:?}", local_path);
-
-    // Delete from source
-    client
-        .delete_object()
-        .bucket(bucket_name)
-        .key(object_key)
-        .send()
-        .await?;
-
+    // Deletion happens regardless of whether download was skipped
+    client.delete_object().bucket(bucket_name).key(object_key).send().await?;
     println!("  -> Deleted from source.");
     Ok(())
 }
