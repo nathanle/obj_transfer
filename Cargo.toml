@@ -1,0 +1,11 @@
+[package]
+name = "akamai_transfer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aws-config = "1.1.7"
+aws-sdk-s3 = "1.17.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+dotenvy = "0.15.7"
